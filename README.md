@@ -854,6 +854,7 @@ For production Azure Storage:
 * Add structured logging and telemetry.
 * Avoid deleting messages until the application has successfully processed them.
 
+Note: there is production grade code published into feature/queue-storage branch for reference.
 ---
 
 # Summary
