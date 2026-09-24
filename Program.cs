@@ -1,5 +1,5 @@
 ﻿using Azure;
-using Azure.Identity;
+using Azure.Storage;
 using Azure.Storage.Queues;
 using Azure.Storage.Queues.Models;
 
@@ -7,27 +7,62 @@ namespace QueueApp;
 
 class Program
 {
-    static readonly string storageAccountName = Environment.GetEnvironmentVariable("AZURE_STORAGE_ACCOUNT_NAME") ??
-        throw new InvalidOperationException("AZURE_STORAGE_ACCOUNT_NAME environment variable is not set.");
+    static readonly string devstorageAccountName =
+        Environment.GetEnvironmentVariable("AZURE_STORAGE_ACCOUNT_NAME") ?? "devstoreaccount1";
 
-    static readonly string queueName = Environment.GetEnvironmentVariable("AZURE_STORAGE_QUEUE_NAME") ??
-        throw new InvalidOperationException("AZURE_STORAGE_QUEUE_NAME environment variable is not set.");
+    static readonly string devqueueName =
+        Environment.GetEnvironmentVariable("AZURE_STORAGE_QUEUE_NAME") ?? "queueapp-queue";
+
+    static readonly string flociEndpoint =
+        Environment.GetEnvironmentVariable("FLOCI_AZ_ENDPOINT") ?? "http://localhost:4577";
+
+    const string DevAccountKey =
+        "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
 
     public static async Task Main(string[] args)
     {
-        Console.WriteLine("QueueApp is running...");
+        Console.WriteLine("QueueApp is booting...");
+        QueueClient queue;
+        try
+        {
+            var options = new QueueClientOptions(QueueClientOptions.ServiceVersion.V2024_11_04);
 
-        QueueClient queue = new(new Uri($"https://{storageAccountName}.queue.core.windows.net/{queueName}"), new DefaultAzureCredential());
+            var queueUri = new Uri($"{flociEndpoint}/{devstorageAccountName}-queue/{devqueueName}");
+            queue = new QueueClient(
+                queueUri,
+                new StorageSharedKeyCredential(devstorageAccountName, DevAccountKey),
+                options);
+
+            if (queue is null)
+            {
+                Console.WriteLine("Queue client is null. Please check the connection string and queue name.");
+                return;
+            }
+            else
+            {
+                Console.WriteLine($"Queue client {queue.AccountName} is connected.");
+            }
+
+            Console.WriteLine($"Storage Account : {devstorageAccountName}");
+            Console.WriteLine($"Queue Name      : {devqueueName}");
+            Console.WriteLine($"Floci Endpoint  : {flociEndpoint}");
+            Console.WriteLine($"Queue URI       : {queueUri}");
+        }
+        catch (RequestFailedException ex) when (ex.ErrorCode == "QueueNotFound")
+        {
+            Console.WriteLine("The queue does not exist. Add a message to create the queue and store the message.");
+            return;
+        }
 
         if (args.Length > 0)
         {
             string value = String.Join(" ", args);
-            await InsertMessageAsync(queue, value);
+            await InsertMessageDevAsync(queue, value);
             Console.WriteLine($"Sent: {value}");
         }
         else
         {
-            string value = await RetrieveNextMessageAsync(queue);
+            string value = await RetrieveNextMessageDevAsync(queue);
             Console.WriteLine($"Received: {value}");
         }
 
@@ -38,22 +73,20 @@ class Program
 
 
     /// <summary>
-    /// Enqueue a message into the specified Azure Storage Queue. If the queue does not exist, it will be created.
-    /// The message can be set to expire after a specified time-to-live (TTL) duration, or it can be set to never expire.
-    /// A queue message must be in a format compatible with an XML request using UTF-8 encoding.
-    /// A message may be up to 64 KB in size. If a message contains binary data, Base64-encode the message.
+    /// Inserts a message into the specified queue. If the queue does not exist, it will attempt to create it first.
     /// </summary>
-    /// <param name="theQueue">The Azure Storage Queue client.</param>
-    /// <param name="newMessage">The message to insert.</param>
-    /// <param name="mustExpire">By default messages will expire</param>
-    /// <param name="timeToLive">By default TTL is 7 days</param>
+    /// <param name="theQueue"></param>
+    /// <param name="newMessage"></param>
+    /// <param name="mustExpire"></param>
+    /// <param name="timeToLive"></param>
     /// <returns></returns>
-    private static async Task InsertMessageAsync(QueueClient theQueue, string newMessage, bool mustExpire = true, TimeSpan? timeToLive = null)
+    private static async Task InsertMessageDevAsync(QueueClient theQueue, string newMessage, bool mustExpire = true, TimeSpan? timeToLive = null)
     {
-        Console.WriteLine("Checking if the queue exists...");
         string? result = await CreateQueue(theQueue);
         if (!string.IsNullOrEmpty(result))
             Console.WriteLine(result);
+        else
+            return;
 
         if (mustExpire)
             if (timeToLive is null)
@@ -65,61 +98,67 @@ class Program
     }
 
 
-    /// <summary>
-    /// Dequeue the next message from the specified Azure Storage Queue. If a message is retrieved, it will be deleted from the queue. 
-    /// Also, if the queue is empty, the user will be prompted to delete the queue.
-    /// </summary>
-    /// <param name="theQueue">The Azure Storage Queue client.</param>
-    /// <returns>The retrieved message, or null if no messages are available.</returns>
-    private static async Task<string> RetrieveNextMessageAsync(QueueClient theQueue)
-    {
-        if (await theQueue.ExistsAsync())
-        {
-            QueueProperties properties = await theQueue.GetPropertiesAsync();
 
-            if (properties.ApproximateMessagesCount > 0)
-            {
-                QueueMessage[] retrievedMessage = await theQueue.ReceiveMessagesAsync(1);
-                string theMessage = retrievedMessage[0].Body.ToString();
-                await theQueue.DeleteMessageAsync(retrievedMessage[0].MessageId, retrievedMessage[0].PopReceipt);
-                return theMessage;
-            }
-            else
+    /// <summary>
+    /// Retrieves the next message from the specified queue. If the queue is empty, it will attempt to delete the queue.
+    /// </summary>
+    /// <param name="theQueue"></param>
+    /// <returns></returns>
+    private static async Task<string> RetrieveNextMessageDevAsync(QueueClient theQueue)
+    {
+        try
+        {
+            QueueMessage[] messages = await theQueue.ReceiveMessagesAsync(1);
+
+            if (messages.Length == 0)
                 return await DeleteQueue(theQueue);
+
+            QueueMessage msg = messages[0];
+            await theQueue.DeleteMessageAsync(msg.MessageId, msg.PopReceipt);
+            return msg.Body.ToString();
         }
-        else
+        catch (RequestFailedException ex) when (ex.ErrorCode == "QueueNotFound")
         {
             return "The queue does not exist. Add a message to create the queue and store the message.";
         }
     }
 
+
+    /// <summary>
+    /// Creates the specified queue if it does not already exist. Prompts the user for confirmation before creating the queue.
+    /// </summary>
+    /// <param name="theQueue"></param>
+    /// <returns></returns>
     private static async Task<string?> CreateQueue(QueueClient theQueue)
     {
-        Console.Write("Attempt to create a new queue? (Y/N) ");
-        string response = Console.ReadLine()!;
-
         try
         {
-            if (response?.ToUpper() == "Y")
-            {
-                if (null != await theQueue.CreateIfNotExistsAsync())
-                {
-                    return "The queue was created.";
-                }
-                else
-                    return null;
-            }
-            else
-            {
+            if (await theQueue.ExistsAsync())
+                return $"The queue {theQueue.Name} exists.";
+
+            Console.Write("Queue does not exist. Attempt to create it? (Y/N) ");
+            string? response = Console.ReadLine();
+
+            if (response?.ToUpper() != "Y")
                 return "The operation was cancelled.";
-            }
+
+
+            await theQueue.CreateAsync();
+
+            return "The queue was created.";
         }
         catch (RequestFailedException ex)
         {
-            return $"Error creating the queue: {ex.Message}";
+            return $"Error creating queue: {ex.Message}";
         }
     }
 
+
+    /// <summary>
+    /// Deletes the specified queue if it is empty. Prompts the user for confirmation before deleting the queue.
+    /// </summary>
+    /// <param name="theQueue"></param>
+    /// <returns></returns>
     private static async Task<string> DeleteQueue(QueueClient theQueue)
     {
         Console.Write("The queue is empty. Attempt to delete it? (Y/N) ");
